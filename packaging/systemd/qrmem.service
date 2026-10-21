@@ -8,7 +8,7 @@
 # configuration change rather than a redesign.
 #
 # Install:
-#   install -Dm755 saphira-qrmem ~/.local/bin/saphira-qrmem
+#   sudo make install
 #   install -Dm644 packaging/systemd/saphira-qrmem.service \
 #     ~/.config/systemd/user/saphira-qrmem.service
 #   systemctl --user daemon-reload
@@ -30,7 +30,7 @@ Group=smalley
 # One ExecStart. Splitting a long command across lines would be read as a second
 # ExecStart= directive, which systemd only allows for Type=oneshot - and it says
 # so at verify time, not start time.
-ExecStart=%h/.local/bin/saphira-qrmem --serve --snapshot %h/.local/state/saphira/qrmem/saphira-qrmem-%U.snapshot
+ExecStart=/usr/bin/qrmem --serve --snapshot %h/.local/state/saphira/qrmem/qrmem-%U.snapshot
 Restart=on-failure
 RestartSec=3
 # The restore point is the ONE part of the fabric that is not scratch. /dev/shm

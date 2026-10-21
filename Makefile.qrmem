@@ -72,16 +72,18 @@ HARDEN_LD ?= -pie -Wl,-z,relro,-z,now
 
 QR_CFLAGS := $(shell $(PKG_CONFIG) --cflags libqrencode 2>/dev/null)
 QR_LIBS := $(shell $(PKG_CONFIG) --libs libqrencode 2>/dev/null)
-ALL_CFLAGS = $(CSTD) $(WARN) $(CFLAGS) $(HARDEN) $(JSON_CFLAGS) $(QR_CFLAGS) -I.
+ALL_CFLAGS = $(CSTD) $(WARN) $(CFLAGS) $(HARDEN) $(JSON_CFLAGS) $(QR_CFLAGS) -Isrc
 QRMEM_LIBS = $(JSON_LIBS) $(QR_LIBS) -lpthread -lm
 
-QRMEM_SRC = qrmem_main.c qrmem_aperture.c qrmem_cell.c \
-           qrmem_tile.c qrmem_plane.c qrmem_uuid.c qrmem_persist.c \
-           qrmem_recover.c
+QRMEM_SRC = src/qrmem_main.c src/qrmem_aperture.c src/qrmem_cell.c \
+           src/qrmem_tile.c src/qrmem_plane.c src/qrmem_uuid.c \
+           src/qrmem_persist.c src/qrmem_recover.c
 QRMEM_OBJ = $(QRMEM_SRC:.c=.o)
-QRMEM_BIN = build/saphira-qrmem
+QRMEM_BIN = build/qrmem
+PREFIX ?= /usr
+DESTDIR ?=
 
-.PHONY: all check clean musl-check test fabric-deps test test-rgb
+.PHONY: all check clean musl-check test fabric-deps test test-rgb install uninstall
 
 # Spelled out rather than left to "first target wins". The header-dependency
 # rule below lists object names with no recipe, and on Egg's make that rule came
@@ -100,7 +102,7 @@ $(QRMEM_BIN): $(QRMEM_OBJ)
 # goal. A stale .o against a widened struct silently truncates copies, which is
 # how the record layout grew by 60 bytes once without anything noticing until a
 # test read back the wrong bytes.
-$(QRMEM_OBJ): $(wildcard qrmem*.h)
+$(QRMEM_OBJ): $(wildcard src/qrmem*.h)
 
 %.o: %.c
 	$(CC) $(ALL_CFLAGS) -c $< -o $@
@@ -127,7 +129,7 @@ fabric-deps: $(QRMEM_BIN)
 	else echo "fabric-deps ok (no database, no TLS)"; fi
 
 test-rgb:
-	$(CC) $(ALL_CFLAGS) -O1 tests/test_qrmem_rgb_plane.c $(filter-out qrmem_main.c,$(QRMEM_SRC)) -o /tmp/qrmem-rgb-plane $(QRMEM_LIBS)
+	$(CC) $(ALL_CFLAGS) -O1 tests/test_qrmem_rgb_plane.c $(filter-out src/qrmem_main.c,$(QRMEM_SRC)) -o /tmp/qrmem-rgb-plane $(QRMEM_LIBS)
 	/tmp/qrmem-rgb-plane
 	zbarimg --quiet --raw /tmp/qrmem-rgb-tile.pbm | grep -F '"v":1'
 
@@ -137,3 +139,17 @@ check: test
 
 clean:
 	rm -f $(QRMEM_OBJ) $(QRMEM_BIN)
+
+install: $(QRMEM_BIN)
+	install -Dm755 $(QRMEM_BIN) $(DESTDIR)$(PREFIX)/bin/qrmem
+	install -Dm644 packaging/qrmem.8 $(DESTDIR)$(PREFIX)/share/man/man8/qrmem.8
+	@if command -v systemctl >/dev/null 2>&1; then \
+	  install -Dm644 packaging/systemd/qrmem.service $(DESTDIR)$(PREFIX)/lib/systemd/system/qrmem.service; \
+	  echo 'installed systemd unit: $(PREFIX)/lib/systemd/system/qrmem.service'; \
+	elif command -v rc-service >/dev/null 2>&1; then \
+	  install -Dm755 packaging/openrc/qrmem $(DESTDIR)/etc/init.d/qrmem; \
+	  echo 'installed OpenRC service: /etc/init.d/qrmem'; \
+	else echo 'installed qrmem binary; no supported init system detected'; fi
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/qrmem $(DESTDIR)$(PREFIX)/share/man/man8/qrmem.8

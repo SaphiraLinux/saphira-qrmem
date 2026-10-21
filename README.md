@@ -21,6 +21,14 @@ Build once:
 make
 ```
 
+Install system-wide (run explicitly as root). `make install` installs
+`/usr/bin/qrmem`, its manual page, and exactly one service definition: systemd
+when `systemctl` is available, otherwise OpenRC when `rc-service` is available.
+
+```sh
+sudo make install
+```
+
 In one terminal, start the isolated development fabric:
 
 ```sh
@@ -39,6 +47,32 @@ Configure an MCP client to run:
 
 The `--stdio` process is an MCP window; it must connect to an already-running
 `--serve` process.
+
+### MCP client configuration
+
+For Codex, add this MCP server entry to its configuration:
+
+```toml
+[mcp_servers.qrmem]
+command = "/usr/bin/qrmem"
+args = ["--stdio", "--agent", "codex", "--aperture", "/qrmem-dev", "--socket", "/tmp/qrmem-dev.sock", "--no-snapshot"]
+```
+
+For OpenCode, add the equivalent stdio server under `mcp.qrmem` in its project
+or user JSON configuration:
+
+```json
+{"type":"local","command":["/usr/bin/qrmem","--stdio","--agent","opencode","--aperture","/qrmem-dev","--socket","/tmp/qrmem-dev.sock","--no-snapshot"]}
+```
+
+For Claude Code, add it as a local MCP server:
+
+```sh
+claude mcp add qrmem -- /usr/bin/qrmem --stdio --agent claude-code \
+  --aperture /qrmem-dev --socket /tmp/qrmem-dev.sock --no-snapshot
+```
+
+All three must point at the same running `qrmem --serve` socket and aperture.
 
 ## Agent workflow
 

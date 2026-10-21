@@ -19,7 +19,7 @@
 name="Saphira tile fabric"
 description="Shared-memory agent tiles with an MCP window"
 
-: "${SAPHIRA_QRMEM_BIN:=/usr/local/bin/saphira-qrmem}"
+: "${SAPHIRA_QRMEM_BIN:=/usr/bin/qrmem}"
 : "${SAPHIRA_QRMEM_USER:=smalley}"
 : "${SAPHIRA_QRMEM_GROUP:=smalley}"
 : "${SAPHIRA_QRMEM_AGENT:=fabric}"

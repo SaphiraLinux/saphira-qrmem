@@ -5,7 +5,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-bin=${QRMEM_BIN:-"$here/build/saphira-qrmem"}
+bin=${QRMEM_BIN:-"$here/build/qrmem"}
 aperture=${QRMEM_APERTURE:-/qrmem-dev}
 tile=${1:-0:0:0}
 viewer=${QR_VIEWER:-imv}
