@@ -1,6 +1,5 @@
 *.o
 build/
-/Makefile
 /core
 *.pbm
 *.png
