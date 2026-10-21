@@ -1,0 +1,64 @@
+# Tile fabric daemon. USER unit, deliberately.
+#
+# The aperture is a shared-memory segment named per uid
+# (/dev/shm/saphira-qrmem-<uid>) and the control socket lives in
+# $XDG_RUNTIME_DIR. Both follow the service user, so changing User= below moves
+# the fabric with it and no other file needs editing. Tile ownership inside the
+# fabric is enforced by agent id, not by file mode, so the change is a
+# configuration change rather than a redesign.
+#
+# Install:
+#   install -Dm755 saphira-qrmem ~/.local/bin/saphira-qrmem
+#   install -Dm644 packaging/systemd/saphira-qrmem.service \
+#     ~/.config/systemd/user/saphira-qrmem.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now saphira-qrmem
+#
+# Enable exactly ONE of: this service, the openrc script, or the cron entry
+# (AGENTS.md). They are alternatives, not layers.
+[Unit]
+Description=Saphira tile fabric (shared-memory agent tiles)
+Documentation=man:saphira-qrmem(8)
+After=default.target
+
+[Service]
+Type=simple
+# Change this to move the fabric to another account. The aperture name and the
+# socket directory both derive from the uid at runtime.
+User=smalley
+Group=smalley
+# One ExecStart. Splitting a long command across lines would be read as a second
+# ExecStart= directive, which systemd only allows for Type=oneshot - and it says
+# so at verify time, not start time.
+ExecStart=%h/.local/bin/saphira-qrmem --serve --snapshot %h/.local/state/saphira/qrmem/saphira-qrmem-%U.snapshot
+Restart=on-failure
+RestartSec=3
+# The restore point is the ONE part of the fabric that is not scratch. /dev/shm
+# is a tmpfs, so without it a reboot takes every agent's live page with it and
+# nothing distinguishes that from never-existed. That was acceptable while
+# nothing depended on the fabric; now that agents do, it is a defect.
+#
+# The restore is deliberately asymmetric. Page CONTENT and project labels come
+# back; authority does not. On start the daemon mints a fresh authority_gen,
+# zeroes every lease and restores NO screen owner, so a dead writer can never
+# come back and hand its authority to whichever agent draws that slot number
+# next. Continuity without resurrection.
+# SIGTERM, not SIGKILL. The daemon saves its snapshot on a clean exit, and that
+# is when the restore point is updated.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=15
+
+# PrivateTmp=true below would put the restore point's own /tmp fallback out of
+# reach, which is correct: the snapshot path is absolute and under $HOME.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# ProtectHome=read-only would also block the snapshot write, so the state
+# directory is named as writable. Everything else in $HOME stays read-only,
+# which is the point of the hardening.
+ProtectHome=read-only
+ReadWritePaths=/dev/shm %t %h/.local/state/saphira/qrmem
+
+[Install]
+WantedBy=default.target

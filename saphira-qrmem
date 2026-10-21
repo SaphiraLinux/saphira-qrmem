@@ -1,0 +1,108 @@
+#!/sbin/openrc-run
+# Tile fabric daemon (openrc alternative to the systemd user unit).
+# Enable exactly ONE init integration; see AGENTS.md.
+#
+# The daemon is an ordinary foreground process; OpenRC supervises it
+# here and nowhere else. No init logic lives in the binary.
+#
+# Configure in /etc/conf.d/saphira-qrmem:
+#   SAPHIRA_QRMEM_AGENT     agent label for the serve process
+#                           (default fabric)
+#   SAPHIRA_QRMEM_APERTURE  aperture path override
+#                           (default /dev/shm/saphira-qrmem-<uid>)
+#   SAPHIRA_QRMEM_SOCKET    control socket path override
+#                           (default $XDG_RUNTIME_DIR/saphira-qrmem.sock)
+#   SAPHIRA_QRMEM_SNAPSHOT  durable restore point path
+#                           (default $XDG_STATE_HOME/saphira/qrmem/<aperture>.snapshot)
+#                           Set to "none" to disable persistence entirely.
+#   SAPHIRA_QRMEM_USER / GROUP  service identity (default smalley)
+name="Saphira tile fabric"
+description="Shared-memory agent tiles with an MCP window"
+
+: "${SAPHIRA_QRMEM_BIN:=/usr/local/bin/saphira-qrmem}"
+: "${SAPHIRA_QRMEM_USER:=smalley}"
+: "${SAPHIRA_QRMEM_GROUP:=smalley}"
+: "${SAPHIRA_QRMEM_AGENT:=fabric}"
+
+command="${SAPHIRA_QRMEM_BIN}"
+command_user="${SAPHIRA_QRMEM_USER}:${SAPHIRA_QRMEM_GROUP}"
+command_background="yes"
+pidfile="/run/saphira-qrmem.pid"
+output_log="/var/log/saphira-qrmem.log"
+error_log="/var/log/saphira-qrmem.log"
+
+command_args="--serve --agent ${SAPHIRA_QRMEM_AGENT}"
+
+# The restore point. /dev/shm is a tmpfs, so without this a reboot takes every
+# agent's live page with it and nothing distinguishes that from never-existed.
+# The restore is deliberately asymmetric: page CONTENT and project labels come
+# back, authority does not. On start the daemon mints a fresh authority_gen,
+# zeroes every lease and restores NO screen owner, so a dead writer can never
+# come back and hand its authority to whoever draws that slot number next.
+if [ -z "${SAPHIRA_QRMEM_SNAPSHOT}" ]; then
+	# Resolved from the SERVICE USER, never from this script's own environment.
+	# OpenRC runs start_pre as root, where HOME is whatever the init system left
+	# it - on Egg it was unset, so the first version computed
+	# /tmp/.local/state/saphira/qrmem/... instead of the user's real state
+	# directory. A restore point under /tmp is wiped by the same tmpfs pressure
+	# that wipes /dev/shm, which would make the whole mechanism decorative while
+	# reporting success. getent is asked for the user's home; if that fails,
+	# /var/lib is the honest fallback rather than a tmpfs.
+	if [ -n "${XDG_STATE_HOME}" ]; then
+		state_dir="${XDG_STATE_HOME}"
+	else
+		state_dir="$(getent passwd "${SAPHIRA_QRMEM_USER}" 2>/dev/null | cut -d: -f6)"
+		if [ -n "${state_dir}" ]; then
+			state_dir="${state_dir}/.local/state"
+		else
+			state_dir="/var/lib/saphira-qrmem"
+		fi
+	fi
+	SAPHIRA_QRMEM_SNAPSHOT="${state_dir}/saphira/qrmem/$(basename "${SAPHIRA_QRMEM_APERTURE:-saphira-qrmem-$(id -u "${SAPHIRA_QRMEM_USER}")}").snapshot"
+elif [ "${SAPHIRA_QRMEM_SNAPSHOT}" = "none" ]; then
+	SAPHIRA_QRMEM_SNAPSHOT=""
+fi
+if [ -n "${SAPHIRA_QRMEM_SNAPSHOT}" ]; then
+	command_args="${command_args} --snapshot ${SAPHIRA_QRMEM_SNAPSHOT}"
+fi
+if [ -n "${SAPHIRA_QRMEM_APERTURE}" ]; then
+	command_args="${command_args} --aperture ${SAPHIRA_QRMEM_APERTURE}"
+fi
+if [ -n "${SAPHIRA_QRMEM_SOCKET}" ]; then
+	command_args="${command_args} --socket ${SAPHIRA_QRMEM_SOCKET}"
+fi
+
+depend() {
+	need localmount
+	use logger
+}
+
+start_pre() {
+	# Fail closed rather than starting a fabric that cannot own its segment.
+	checkpath --directory --mode 1777 /dev/shm || return 1
+	checkpath --file --mode 0755 "${SAPHIRA_QRMEM_BIN}" || return 1
+	# A fixed socket path under /run needs its directory pre-created
+	# (the daemon user cannot create it there); the /tmp fallback
+	# the binary chooses on its own needs none of this.
+	case "${SAPHIRA_QRMEM_SOCKET}" in
+		/run/*)
+			checkpath --directory \
+				--owner "${SAPHIRA_QRMEM_USER}:${SAPHIRA_QRMEM_GROUP}" \
+				--mode 0755 "${SAPHIRA_QRMEM_SOCKET%/*}" || return 1
+			;;
+	esac
+	# A restore point that cannot be written is worth saying out loud NOW rather
+	# than after the next reboot, when the loss is discovered instead of
+	# predicted. The daemon creates the tree itself; this only checks it.
+	if [ -n "${SAPHIRA_QRMEM_SNAPSHOT}" ]; then
+		snapdir="${SAPHIRA_QRMEM_SNAPSHOT%/*}"
+		if [ ! -d "${snapdir}" ]; then
+			einfo "restore point directory ${snapdir} does not exist yet;"
+			einfo "the daemon will create it, and pages will survive from then on"
+		elif ! su -s /bin/sh -c "test -w '${snapdir}'" "${SAPHIRA_QRMEM_USER}" 2>/dev/null; then
+			ewarn "restore point directory ${snapdir} is not writable by ${SAPHIRA_QRMEM_USER};"
+			ewarn "pages will NOT survive a reboot until that is fixed"
+		fi
+	fi
+	return 0
+}

@@ -1,0 +1,139 @@
+# Saphira Memory - standalone build for the qrmem tile fabric.
+#
+# The fabric is deliberately independent of the daemon: it holds no SQL,
+# authenticates nothing, and links only json-c, pthread, libc and libm. The
+# top-level Makefile says so at the link line, but it cannot HONOUR it, because
+# its OpenSSL and MariaDB gates are evaluated at parse time and therefore fire
+# for every target in the file - including `make saphira-qrmem`, which needs
+# neither.
+#
+# That is not a cosmetic problem. It means the one component of this product
+# with the smallest dependency surface is the one component that cannot be built
+# on a host without the largest one. On hatchling - a Saphira Linux ARM-free
+# x86_64 box with json-c and no libssl-dev - `make saphira-qrmem` stopped at
+#
+#     OpenSSL >= 3.5 required (no pkg-config libcrypto/openssl)
+#
+# for a binary that contains no OpenSSL. Installing a TLS development package
+# onto a host to obtain a fabric that deliberately does not do TLS would be the
+# wrong fix: it would make the host's dependency set lie about what the fabric
+# needs.
+#
+# This file is the fix. It builds the fabric and its tests with the same warning
+# set, hardening, and musl discipline as the main build, from a dependency list
+# that is the real one:
+#
+#     json-c   the MCP surface
+#     pthread  the drain and lease protocol
+#     libc     shm_open, mmap, rename, fsync
+#     libm     plane arithmetic
+#
+# No OpenSSL. No MariaDB. No SQLite. No TLS. Run `make musl-check` here and the
+# symbol check is over exactly these objects.
+#
+# On a host that already has the daemon's build dependencies, both paths produce
+# the same binary from the same sources; the difference is only which Makefile
+# evaluated the gates.
+
+CC ?= cc
+PKG_CONFIG ?= pkg-config
+
+JSON_CFLAGS := $(shell $(PKG_CONFIG) --cflags json-c 2>/dev/null)
+ifeq ($(JSON_CFLAGS),)
+JSON_CFLAGS := -I/usr/include/json-c
+endif
+JSON_LIBS := $(shell $(PKG_CONFIG) --libs json-c 2>/dev/null)
+ifeq ($(JSON_LIBS),)
+JSON_LIBS := -ljson-c
+endif
+
+CSTD := -std=c11 -D_POSIX_C_SOURCE=200809L
+
+# The project's warning set, verbatim from the top-level Makefile. Kept in sync
+# deliberately rather than relaxed: a fabric that builds quietly is a fabric
+# whose dropped atomics and shadowed variables nobody notices.
+WARN := -Wall -Wextra -Wpedantic -Wshadow \
+        -Werror=implicit-function-declaration -Wno-unused-parameter \
+        -Wno-overlength-strings -Werror=format-truncation -Werror=shadow \
+        -Werror=unterminated-string-initialization
+
+CFLAGS ?= -O3
+
+# musl has no _chk stubs, so -D_FORTIFY_SOURCE=2 makes GCC emit
+# __snprintf_chk calls that fail to link there. Detected, not guessed; an
+# explicit HARDEN= on the command line still wins.
+MUSL_TARGET := $(shell $(CC) -dumpmachine 2>/dev/null)
+ifneq ($(findstring musl,$(MUSL_TARGET)),)
+HARDEN ?= -fstack-protector-strong -fPIE
+else
+HARDEN ?= -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE
+endif
+HARDEN_LD ?= -pie -Wl,-z,relro,-z,now
+
+QR_CFLAGS := $(shell $(PKG_CONFIG) --cflags libqrencode 2>/dev/null)
+QR_LIBS := $(shell $(PKG_CONFIG) --libs libqrencode 2>/dev/null)
+ALL_CFLAGS = $(CSTD) $(WARN) $(CFLAGS) $(HARDEN) $(JSON_CFLAGS) $(QR_CFLAGS) -I.
+QRMEM_LIBS = $(JSON_LIBS) $(QR_LIBS) -lpthread -lm
+
+QRMEM_SRC = qrmem_main.c qrmem_aperture.c qrmem_cell.c \
+           qrmem_tile.c qrmem_plane.c qrmem_uuid.c qrmem_persist.c \
+           qrmem_recover.c
+QRMEM_OBJ = $(QRMEM_SRC:.c=.o)
+QRMEM_BIN = build/saphira-qrmem
+
+.PHONY: all check clean musl-check test fabric-deps test test-rgb
+
+# Spelled out rather than left to "first target wins". The header-dependency
+# rule below lists object names with no recipe, and on Egg's make that rule came
+# first - so a bare `make` built src/qrmem_main.o and stopped, reporting success
+# with no binary. A build that quietly produces nothing is worse than one that
+# fails, and the default goal is not something to leave to evaluation order.
+.DEFAULT_GOAL := all
+
+all: $(QRMEM_BIN)
+
+$(QRMEM_BIN): $(QRMEM_OBJ)
+	@mkdir -p build
+	$(CC) $(ALL_CFLAGS) $(HARDEN_LD) $(QRMEM_OBJ) -o $@ $(QRMEM_LIBS)
+
+# Header tracking, placed AFTER the targets so it cannot become the default
+# goal. A stale .o against a widened struct silently truncates copies, which is
+# how the record layout grew by 60 bytes once without anything noticing until a
+# test read back the wrong bytes.
+$(QRMEM_OBJ): $(wildcard qrmem*.h)
+
+%.o: %.c
+	$(CC) $(ALL_CFLAGS) -c $< -o $@
+
+# musl has no qsort_r, no strdupa, no backtrace. The fabric is expected to build
+# on musl, so this gate is the same one the main build runs, over exactly the
+# objects the fabric actually contains.
+MUSL_BAD = qsort_r|strdupa|strndupa|backtrace|malloc_trim|mallopt|getcontext|makecontext|__register_atfork
+
+musl-check: $(QRMEM_OBJ)
+	@if nm $(QRMEM_OBJ) 2>/dev/null | grep -E -q " U ($(MUSL_BAD))(@| )"; then \
+	  echo "musl-check FAILED: forbidden symbols:"; \
+	  nm $(QRMEM_OBJ) | grep -E " U ($(MUSL_BAD))(@| )"; exit 1; \
+	else echo "musl-check ok (no forbidden symbols)"; fi
+
+# The fabric must never acquire a database or TLS dependency. Checked on the
+# LINKED binary as well as the objects, because a transitive dependency is
+# exactly the shape this misses when only the objects are inspected.
+fabric-deps: $(QRMEM_BIN)
+	@if nm -u $(QRMEM_BIN) | grep -E -q " (mysql|mariadb|sqlite|SSL|EVP|PEM|RAND_|sk_|X509)"; then \
+	  echo "fabric-deps FAILED: the fabric references database or TLS symbols:"; \
+	  nm -u $(QRMEM_BIN) | grep -E " (mysql|mariadb|sqlite|SSL|EVP|PEM|RAND_|sk_|X509)"; \
+	  exit 1; \
+	else echo "fabric-deps ok (no database, no TLS)"; fi
+
+test-rgb:
+	$(CC) $(ALL_CFLAGS) -O1 tests/test_qrmem_rgb_plane.c $(filter-out qrmem_main.c,$(QRMEM_SRC)) -o /tmp/qrmem-rgb-plane $(QRMEM_LIBS)
+	/tmp/qrmem-rgb-plane
+	zbarimg --quiet --raw /tmp/qrmem-rgb-tile.pbm | grep -F '"v":1'
+
+test: musl-check fabric-deps test-rgb
+
+check: test
+
+clean:
+	rm -f $(QRMEM_OBJ) $(QRMEM_BIN)

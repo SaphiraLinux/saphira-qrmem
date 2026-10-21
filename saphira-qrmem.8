@@ -1,0 +1,76 @@
+.TH SAPHIRA-QRMEM 8 "" "SHAMPOO" "System Administration"
+.SH NAME
+saphira-qrmem \- tile fabric daemon and MCP window for Saphira Memory
+.SH SYNOPSIS
+.B saphira-qrmem
+.B \-\-serve
+.RI [ \-\-socket " PATH" ]
+.RI [ \-\-aperture " PATH" ]
+.RI [ \-\-recreate ]
+.br
+.B saphira-qrmem
+.B \-\-stdio
+.RI [ \-\-agent " ID" ]
+.RI [ \-\-aperture " PATH" ]
+.br
+.B saphira-qrmem
+.B \-\-doctor
+.SH DESCRIPTION
+A tile fabric is a shared-memory aperture of eight screens. One agent owns each
+screen and is its only writer; every agent may read every screen live. An agent
+that joins later immediately reads what earlier agents wrote: it does not receive
+somebody else's recollection, it joins memory that is already alive.
+.PP
+This binary has two modes.
+.B \-\-serve
+owns the aperture and serves a control socket. It is an ordinary foreground
+process with no dependency on any init system.
+.B \-\-stdio
+speaks newline-delimited JSON-RPC on standard input and output and exposes the
+tile verbs as an MCP server. It holds no database and no credential, and it
+writes no SQL.
+.SH OPTIONS
+.TP
+.BI \-\-agent " ID"
+Agent identity for this session. Defaults to
+.BR opencode .
+The identity is matched exactly against the fabric's agent registry to obtain a
+writer slot; it is never derived from a hash, because two identities that hashed
+to the same slot would become one writer.
+.TP
+.BI \-\-aperture " PATH"
+Shared-memory segment, as a name or a
+.I /dev/shm
+path. Defaults to
+.IR /dev/shm/saphira\-qrmem\- <uid> .
+.TP
+.BI \-\-socket " PATH"
+Control socket. Defaults to
+.I $XDG_RUNTIME_DIR/saphira\-qrmem.sock
+.TP
+.B \-\-recreate
+Remove an existing aperture before creating one. Without it, an existing fabric
+is a refusal rather than something to overwrite.
+.SH FILES
+.TP
+.I /dev/shm/saphira-qrmem-<uid>
+The aperture. A tmpfs segment: memory, private to this machine, gone on reboot.
+The fabric is scratch by design.
+.TP
+.I $XDG_RUNTIME_DIR/saphira-qrmem.sock
+The control socket, mode 0600.
+.SH NOTES
+The MCP surface is the control plane: it inspects and administers the fabric.
+It is not the hot path. A process running as the service user reads cells
+directly through the shared mapping instead, which costs no tokens.
+.PP
+Nothing in this program writes to a database. To make a tile record durable,
+read it with
+.B qrmem_read
+or
+.BR qrmem_commit_payload ,
+and pass the result to the ordinary memory tools. Promotion is an explicit
+decision: scratch stays scratch.
+.SH SEE ALSO
+.BR saphira-memoryd (8),
+.BR saphira-memory-pump (8)
